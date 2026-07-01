@@ -15,6 +15,7 @@ from tools.skills_hub import (
     SkillsShSource,
     UrlSource,
     WellKnownSkillSource,
+    LocalSkillSource,
     OptionalSkillSource,
     SkillSource,
     SkillBundle,
@@ -1294,6 +1295,10 @@ class TestCreateSourceRouter:
     def test_includes_url_source(self):
         sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
         assert any(isinstance(src, UrlSource) for src in sources)
+
+    def test_includes_local_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, LocalSkillSource) for src in sources)
 
     def test_url_source_runs_before_github_source(self):
         # UrlSource must win over GitHubSource when both could claim a URL.

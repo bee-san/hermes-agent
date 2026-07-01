@@ -1260,6 +1260,36 @@ class TestSkillViewCollisionDetection:
         assert result["path"] == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
 
+    def test_support_markdown_in_nested_archive_dir_does_not_collide_with_real_skill(
+        self, tmp_path
+    ):
+        """Archived reference copies without a live skill root still must not shadow.
+
+        This mirrors the kanban-worker regression: a preserved
+        kanban-operations/references/kanban-worker.md archive file should not
+        make bare ``kanban-worker`` ambiguous when the real skill lives at
+        devops/kanban-worker/SKILL.md.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "kanban-worker", category="devops", body="REAL WORKER")
+        archive_ref = local_dir / "kanban-operations" / "references" / "kanban-worker.md"
+        archive_ref.parent.mkdir(parents=True, exist_ok=True)
+        archive_ref.write_text("# Archived worker reference\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("kanban-worker")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "kanban-worker"
+        assert "REAL WORKER" in result["content"]
+        assert "Archived worker reference" not in result["content"]
+
     def test_reference_package_skill_md_is_not_active_skill(self, tmp_path):
         """Curator-preserved package SKILL.md files under references stay data.
 

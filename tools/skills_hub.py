@@ -3903,6 +3903,134 @@ class HermesIndexSource(SkillSource):
         )
 
 
+class LocalSkillSource(SkillSource):
+    """Read installed profile skills from the active Hermes home.
+
+    This source covers the files surfaced by ``hermes skills list --source
+    local``. It keeps the same short-name ambiguity behavior as the filesystem
+    loader: if a name exists in multiple places, the caller must pick a full
+    identifier instead of guessing.
+    """
+
+    def __init__(self):
+        self._cache: Optional[List[SkillMeta]] = None
+
+    def source_id(self) -> str:
+        return "local"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "local"
+
+    def _local_skills(self) -> List[SkillMeta]:
+        if self._cache is not None:
+            return self._cache
+
+        from tools.skills_tool import _find_all_skills
+
+        try:
+            hub_names = {entry["name"] for entry in HubLockFile().list_installed()}
+        except Exception:
+            hub_names = set()
+
+        try:
+            from tools.skills_sync import _read_manifest
+
+            builtin_names = set(_read_manifest())
+        except Exception:
+            builtin_names = set()
+
+        skills: List[SkillMeta] = []
+        for skill in _find_all_skills(skip_disabled=True):
+            name = str(skill.get("name") or "").strip()
+            if not name or name in hub_names or name in builtin_names:
+                continue
+
+            category = str(skill.get("category") or "").strip()
+            identifier = f"{category}/{name}" if category else name
+            skills.append(
+                SkillMeta(
+                    name=name,
+                    description=str(skill.get("description") or ""),
+                    source="local",
+                    identifier=identifier,
+                    trust_level="local",
+                    tags=[],
+                    extra={"category": category} if category else {},
+                )
+            )
+
+        skills.sort(key=lambda meta: ((meta.extra.get("category") or ""), meta.name.lower()))
+        self._cache = skills
+        return skills
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        query_lower = query.strip().lower()
+        results: List[SkillMeta] = []
+
+        for meta in self._local_skills():
+            searchable = f"{meta.name} {meta.description} {meta.extra.get('category', '')}".lower()
+            if query_lower and query_lower not in searchable:
+                continue
+            results.append(meta)
+            if len(results) >= limit:
+                break
+
+        return results
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        ident = identifier.strip()
+        if ident.startswith("local/"):
+            ident = ident[len("local/"):]
+
+        target_name = ident.rsplit("/", 1)[-1].lower()
+
+        for meta in self._local_skills():
+            if meta.identifier == ident or meta.name.lower() == target_name:
+                return meta
+
+        return None
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        meta = self.inspect(identifier)
+        if not meta:
+            return None
+
+        skill_dir = _skills_dir() / meta.identifier
+        try:
+            resolved = skill_dir.resolve()
+            skills_root = _skills_dir().resolve()
+            if not resolved.is_dir() or not resolved.is_relative_to(skills_root):
+                return None
+        except (OSError, ValueError):
+            return None
+
+        files: Dict[str, Union[str, bytes]] = {}
+        for f in resolved.rglob("*"):
+            if (
+                f.is_file()
+                and not f.name.startswith(".")
+                and "__pycache__" not in f.parts
+                and f.suffix != ".pyc"
+            ):
+                rel_path = str(f.relative_to(resolved))
+                try:
+                    files[rel_path] = f.read_bytes()
+                except OSError:
+                    continue
+
+        if not files:
+            return None
+
+        return SkillBundle(
+            name=meta.name,
+            files=files,
+            source="local",
+            identifier=meta.identifier,
+            trust_level="local",
+            metadata={"description": meta.description, "category": meta.extra.get("category", "")},
+        )
+
+
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
     """
     Create all configured source adapters.
@@ -3916,6 +4044,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
 
     sources: List[SkillSource] = [
         OptionalSkillSource(),        # Official optional skills (highest priority)
+        LocalSkillSource(),           # Installed profile skills (active HERMES_HOME)
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),

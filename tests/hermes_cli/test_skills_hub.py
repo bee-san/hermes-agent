@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash, inspect_skill
 
 
 class _DummyLockFile:
@@ -96,6 +96,12 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def _write_skill(root, rel_path: str, content: str) -> None:
+    skill_dir = root / rel_path
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +226,62 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def test_inspect_skill_resolves_local_kanban_worker(monkeypatch, tmp_path, hub_env):
+    import agent.skill_utils as skill_utils
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "devops/kanban-worker",
+        """---
+name: kanban-worker
+description: Primary worker skill
+---
+
+# Kanban worker
+""",
+    )
+    _write_skill(
+        skills_root,
+        "devops/kanban-operations",
+        """---
+name: kanban-operations
+description: Umbrella skill
+---
+
+# Kanban operations
+""",
+    )
+    ref_dir = skills_root / "devops" / "kanban-operations" / "references"
+    ref_dir.mkdir(parents=True, exist_ok=True)
+    (ref_dir / "kanban-worker.md").write_text(
+        """---
+name: kanban-worker
+description: Archived reference copy
+---
+
+# archived
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_root)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+
+    info = inspect_skill("kanban-worker")
+    assert info is not None
+    assert info["name"] == "kanban-worker"
+    assert info["source"] == "local"
+    assert info["identifier"] == "devops/kanban-worker"
+    assert "Primary worker skill" in info["skill_md_preview"]
+    assert "Archived reference copy" not in info["skill_md_preview"]
 
 
 def test_do_check_reports_available_updates(monkeypatch):

@@ -81,6 +81,7 @@ from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    SKILL_SUPPORT_DIRS as _SKILL_SUPPORT_DIRS,
     is_skill_support_path as _is_skill_support_path,
 )
 
@@ -1072,14 +1073,21 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
-            # Exclude skill support docs: references/templates/assets/scripts
-            # are loaded through skill_view(skill, file_path=...) and must not
-            # shadow or collide with real skills that share the same basename.
+            # Support/reference docs can live in archived package trees even
+            # when the package root no longer has a live SKILL.md, and they must
+            # not shadow a real skill basename.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md" and not _is_skill_support_path(
-                    found_md
-                ):
-                    _record(None, found_md)
+                if found_md.name == "SKILL.md":
+                    continue
+                if _is_skill_support_path(found_md):
+                    continue
+                try:
+                    rel_parts = found_md.relative_to(search_dir).parts
+                except ValueError:
+                    rel_parts = found_md.parts
+                if any(part in _SKILL_SUPPORT_DIRS for part in rel_parts[1:-1]):
+                    continue
+                _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
